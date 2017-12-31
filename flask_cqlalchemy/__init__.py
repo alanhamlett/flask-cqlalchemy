@@ -7,17 +7,13 @@ flask_cqlalchemy
 
 """
 from cassandra.cqlengine import connection
-from cassandra.cqlengine.management import (
-    sync_table, create_keyspace_simple, sync_type
-)
 from cassandra.cqlengine import columns
 from cassandra.cqlengine import models
 from cassandra.cqlengine import usertype
-
-try:
-    from flask import _app_ctx_stack as stack
-except ImportError:
-    from flask import _request_ctx_stack as stack
+from cassandra.cqlengine.connection import cluster, session
+from cassandra.cqlengine.management import (
+    sync_table, create_keyspace_simple, sync_type
+)
 
 
 class CQLAlchemy(object):
@@ -47,21 +43,46 @@ class CQLAlchemy(object):
         """
         self._hosts_ = app.config['CASSANDRA_HOSTS']
         self._keyspace_ = app.config['CASSANDRA_KEYSPACE']
-        consistency = app.config.get('CASSANDRA_CONSISTENCY', 1)
-        lazy_connect = app.config.get('CASSANDRA_LAZY_CONNECT', False)
-        retry_connect = app.config.get('CASSANDRA_RETRY_CONNECT', False)
-        setup_kwargs = app.config.get('CASSANDRA_SETUP_KWARGS', {})
+        self._consistency = app.config.get('CASSANDRA_CONSISTENCY', 1)
+        self._lazy_connect = app.config.get('CASSANDRA_LAZY_CONNECT', False)
+        self._retry_connect = app.config.get('CASSANDRA_RETRY_CONNECT', False)
+        self._setup_kwargs = app.config.get('CASSANDRA_SETUP_KWARGS', {})
 
         if not self._hosts_ and self._keyspace_:
             raise NoConfig("""No Configuration options defined.
             At least CASSANDRA_HOSTS and CASSANDRA_CONSISTENCY
             must be supplied""")
+
+        self.setup_connection()
+
+        try:
+            from uwsgidecorators import postfork
+        except ImportError:  # We're not in a uWSGI context
+            try:
+                from celery.signals import worker_process_init, beat_init
+            except ImportError:  # We're not in a Celery worker context
+                pass
+            else:
+                def cassandra_init(*args, **kwargs):
+                    self.setup_connection()
+                worker_process_init.connect(cassandra_init)
+                beat_init.connect(cassandra_init)
+        else:
+            @postfork
+            def cassandra_init(*args, **kwargs):
+                self.setup_connection()
+
+    def setup_connection(self):
+        if cluster is not None:
+            cluster.shutdown()
+        if session is not None:
+            session.shutdown()
         connection.setup(self._hosts_,
                          self._keyspace_,
-                         consistency=consistency,
-                         lazy_connect=lazy_connect,
-                         retry_connect=retry_connect,
-                         **setup_kwargs)
+                         consistency=self._consistency,
+                         lazy_connect=self._lazy_connect,
+                         retry_connect=self._retry_connect,
+                         **self._setup_kwargs)
 
     def sync_db(self):
         """Sync all defined tables. All defined models must be imported before
