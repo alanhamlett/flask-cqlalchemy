@@ -53,20 +53,21 @@ class CQLAlchemy(object):
             At least CASSANDRA_HOSTS and CASSANDRA_CONSISTENCY
             must be supplied""")
 
-        self.setup_connection()
-
         try:
             from uwsgidecorators import postfork
         except ImportError:  # We're not in a uWSGI context
             try:
                 from celery.signals import worker_process_init, beat_init
-            except ImportError:  # We're not in a Celery worker context
-                pass
+            except ImportError:  # Celery is not installed
+                self.setup_connection()
             else:
                 def cassandra_init(*args, **kwargs):
                     self.setup_connection()
                 worker_process_init.connect(cassandra_init)
                 beat_init.connect(cassandra_init)
+
+                # We might be running as a script
+                self.setup_connection()
         else:
             @postfork
             def cassandra_init(*args, **kwargs):
