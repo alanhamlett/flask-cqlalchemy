@@ -55,29 +55,41 @@ class CQLAlchemy(object):
 
         try:
             from uwsgidecorators import postfork
-        except ImportError:  # We're not in a uWSGI context
-            try:
-                from celery.signals import worker_process_init, beat_init
-            except ImportError:  # Celery is not installed
-                self.setup_connection()
-            else:
-                def cassandra_init(*args, **kwargs):
-                    self.setup_connection()
-                worker_process_init.connect(cassandra_init)
-                beat_init.connect(cassandra_init)
-
-                # We might be running as a script
-                self.setup_connection()
+        except ImportError:  # uWSGI isn't installed
+            pass
         else:
             @postfork
-            def cassandra_init(*args, **kwargs):
+            def cassandra_init_uwsgi(*args, **kwargs):
                 self.setup_connection()
 
-    def setup_connection(self):
+        try:
+            from celery.signals import (
+                worker_process_init, beat_init, worker_shutting_down
+            )
+        except ImportError:  # Celery is not installed
+            pass
+        else:
+            def cassandra_init_celery(*args, **kwargs):
+                self.setup_connection()
+
+            def cassandra_shutdown_celery(*args, **kwargs):
+                self.shutdown_connection()
+
+            worker_process_init.connect(cassandra_init_celery)
+            worker_shutting_down.connect(cassandra_shutdown_celery)
+            beat_init.connect(cassandra_init_celery)
+
+        # We might be running as a script
+        self.setup_connection()
+
+    def shutdown_connection(self):
         if cluster is not None:
             cluster.shutdown()
         if session is not None:
             session.shutdown()
+
+    def setup_connection(self):
+        self.shutdown_connection()
         connection.setup(self._hosts_,
                          self._keyspace_,
                          consistency=self._consistency,
